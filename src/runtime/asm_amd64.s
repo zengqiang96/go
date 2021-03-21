@@ -91,18 +91,19 @@ TEXT runtime·rt0_go<ABIInternal>(SB),NOSPLIT,$0
 	MOVQ	DI, AX		// argc
 	MOVQ	SI, BX		// argv
 	SUBQ	$(4*8+7), SP		// 2args 2auto
-	ANDQ	$~15, SP
-	MOVQ	AX, 16(SP)
-	MOVQ	BX, 24(SP)
+	ANDQ	$~15, SP //调整栈顶寄存器使其按16字节对齐
+	MOVQ	AX, 16(SP) //argc放在SP + 16字节处
+	MOVQ	BX, 24(SP) //argv放在SP + 24字节处
 
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
-	MOVQ	$runtime·g0(SB), DI
-	LEAQ	(-64*1024+104)(SP), BX
-	MOVQ	BX, g_stackguard0(DI)
-	MOVQ	BX, g_stackguard1(DI)
-	MOVQ	BX, (g_stack+stack_lo)(DI)
-	MOVQ	SP, (g_stack+stack_hi)(DI)
+  // 下面这段代码从系统线程的栈空分出一部分当作g0的栈，然后初始化g0的栈信息和stackgard
+	MOVQ	$runtime·g0(SB), DI // g0的地址放入DI寄存器
+	LEAQ	(-64*1024+104)(SP), BX // BX = SP - 64*1024 + 104
+	MOVQ	BX, g_stackguard0(DI) // g0.stackguard0 = SP - 64*1024 + 104
+	MOVQ	BX, g_stackguard1(DI) // g0.stackguard1 = SP - 64*1024 + 104
+	MOVQ	BX, (g_stack+stack_lo)(DI) // g0.stack.lo = SP - 64*1024 + 104
+	MOVQ	SP, (g_stack+stack_hi)(DI) // g0.stack.hi = SP
 
 	// find out information about the processor we're on
 	MOVL	$0, AX
@@ -186,23 +187,26 @@ needtls:
 	JMP ok
 #endif
 
-	LEAQ	runtime·m0+m_tls(SB), DI
-	CALL	runtime·settls(SB)
+  // 下面开始初始化tls(thread local storage,线程本地存储)
+	LEAQ	runtime·m0+m_tls(SB), DI // DI = &m0.tls，取m0的tls成员的地址到DI寄存器
+	CALL	runtime·settls(SB) // 调用settls设置线程本地存储，settls函数的参数在DI寄存器中
 
 	// store through it, to make sure it works
-	get_tls(BX)
-	MOVQ	$0x123, g(BX)
-	MOVQ	runtime·m0+m_tls(SB), AX
-	CMPQ	AX, $0x123
+  // 验证settls是否可以正常工作，如果有问题则abort退出程序
+	get_tls(BX) // 获取fs段基地址并放入BX寄存器，其实就是m0.tls[1]的地址，get_tls的代码由编译器生成
+	MOVQ	$0x123, g(BX) // 把整型常量0x123拷贝到fs段基地址偏移-8的内存位置，也就是m0.tls[0] = 0x123
+	MOVQ	runtime·m0+m_tls(SB), AX // AX = m0.tls[0]
+	CMPQ	AX, $0x123 // 检查m0.tls[0]的值是否是通过线程本地存储存入的0x123来验证tls功能是否正常
 	JEQ 2(PC)
-	CALL	runtime·abort(SB)
+	CALL	runtime·abort(SB) // 如果线程本地存储不能正常工作，退出程序
 ok:
 	// set the per-goroutine and per-mach "registers"
-	get_tls(BX)
-	LEAQ	runtime·g0(SB), CX
-	MOVQ	CX, g(BX)
-	LEAQ	runtime·m0(SB), AX
+	get_tls(BX) //获取fs段基址到BX寄存器
+	LEAQ	runtime·g0(SB), CX  //CX = g0的地址
+	MOVQ	CX, g(BX) //把g0的地址保存在线程本地存储里面，也就是m0.tls[0]=&g0
+	LEAQ	runtime·m0(SB), AX //AX = m0的地址
 
+  //把m0和g0关联起来m0->g0 = g0，g0->m = m0
 	// save m->g0 = g0
 	MOVQ	CX, m_g0(AX)
 	// save m0 to g0->m
@@ -210,26 +214,30 @@ ok:
 
 	CLD				// convention is D is always left cleared
 	CALL	runtime·check(SB)
-
-	MOVL	16(SP), AX		// copy argc
-	MOVL	AX, 0(SP)
-	MOVQ	24(SP), AX		// copy argv
-	MOVQ	AX, 8(SP)
-	CALL	runtime·args(SB)
-	CALL	runtime·osinit(SB)
-	CALL	runtime·schedinit(SB)
+ 
+  //准备调用args函数，前面四条指令把参数放在栈上
+	MOVL	16(SP), AX		// copy argc // AX = argc
+	MOVL	AX, 0(SP)     // argc放在栈顶
+	MOVQ	24(SP), AX		// copy argv // AX = argv
+	MOVQ	AX, 8(SP)     // argv放在SP + 8的位置
+	CALL	runtime·args(SB) //处理操作系统传递过来的参数和env，不需要关心
+  //对于linx来说，osinit唯一功能就是获取CPU的核数并放在global变量ncpu中，
+  //调度器初始化时需要知道当前系统有多少CPU核
+	CALL	runtime·osinit(SB) //执行的结果是全局变量 ncpu = CPU核数
+	CALL	runtime·schedinit(SB) //调度系统初始化
 
 	// create a new goroutine to start program
-	MOVQ	$runtime·mainPC(SB), AX		// entry
-	PUSHQ	AX
-	PUSHQ	$0			// arg size
-	CALL	runtime·newproc(SB)
+	MOVQ	$runtime·mainPC(SB), AX		// entry  mainPC是runtime.main
+	PUSHQ	AX  # newproc的第二个参数入栈，也就是新的goroutine需要执行的函数
+	PUSHQ	$0			// arg size  newproc的第一个参数入栈，该参数表示runtime.main函数需要的参数大小，因为runtime.main没有参数，所以这里是0
+	CALL	runtime·newproc(SB)  # 创建main goroutine
 	POPQ	AX
 	POPQ	AX
 
 	// start this M
 	CALL	runtime·mstart(SB)
 
+  # 上面的mstart永远不应该返回的，如果返回了，一定是代码逻辑有问题，直接abort
 	CALL	runtime·abort(SB)	// mstart should never return
 	RET
 
@@ -279,20 +287,28 @@ TEXT runtime·gosave(SB), NOSPLIT, $0-8
 // func gogo(buf *gobuf)
 // restore state from Gobuf; longjmp
 TEXT runtime·gogo(SB), NOSPLIT, $16-8
-	MOVQ	buf+0(FP), BX		// gobuf
-	MOVQ	gobuf_g(BX), DX
-	MOVQ	0(DX), CX		// make sure g != nil
+	MOVQ	buf+0(FP), BX		// gobuf  #buf = &gp.sched
+	MOVQ	gobuf_g(BX), DX  // DX = gp.sched.g
+  // 下面这行代码没有实质作用，检查gp.sched.g是否是nil，如果是nil进程会crash死掉
+	MOVQ	0(DX), CX		// make sure g != nil  
 	get_tls(CX)
+  // 把要运行的g的指针放入线程本地存储，这样后面的代码就可以通过线程本地存储
+  // 获取到当前正在执行的goroutine的g结构体对象，从而找到与之关联的m和p
 	MOVQ	DX, g(CX)
+  // 把CPU的SP寄存器设置为sched.sp，完成了栈的切换
 	MOVQ	gobuf_sp(BX), SP	// restore SP
+  // 下面三条同样是恢复调度上下文到CPU相关寄存器
 	MOVQ	gobuf_ret(BX), AX
 	MOVQ	gobuf_ctxt(BX), DX
 	MOVQ	gobuf_bp(BX), BP
+  // 清空sched的值，因为我们已把相关值放入CPU对应的寄存器了，不再需要，这样做可以少gc的工作量
 	MOVQ	$0, gobuf_sp(BX)	// clear to help garbage collector
 	MOVQ	$0, gobuf_ret(BX)
 	MOVQ	$0, gobuf_ctxt(BX)
 	MOVQ	$0, gobuf_bp(BX)
+  // 把sched.pc值放入BX寄存器
 	MOVQ	gobuf_pc(BX), BX
+  //JMP把BX寄存器的包含的地址值放入CPU的IP寄存器，于是，CPU跳转到该地址继续执行指令，
 	JMP	BX
 
 // func mcall(fn func(*g))

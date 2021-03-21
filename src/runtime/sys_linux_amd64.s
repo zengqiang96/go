@@ -660,15 +660,19 @@ TEXT runtime·settls(SB),NOSPLIT,$32
 	// Android stores the TLS offset in runtime·tls_g.
 	SUBQ	runtime·tls_g(SB), DI
 #else
+  //DI寄存器中存放的是m.tls[0]的地址，m的tls成员是一个数组，读者如果忘记了可以回头看一下m结构体的定义
+  //下面这一句代码把DI寄存器中的地址加8，为什么要+8呢，主要跟ELF可执行文件格式中的TLS实现的机制有关
+  //执行下面这句指令之后DI寄存器中的存放的就是m.tls[1]的地址了
 	ADDQ	$8, DI	// ELF wants to use -8(FS)
 #endif
-	MOVQ	DI, SI
-	MOVQ	$0x1002, DI	// ARCH_SET_FS
-	MOVQ	$SYS_arch_prctl, AX
+  //下面通过arch_prctl系统调用设置FS段基址
+	MOVQ	DI, SI //SI存放arch_prctl系统调用的第二个参数
+	MOVQ	$0x1002, DI	// ARCH_SET_FS //arch_prctl的第一个参数
+	MOVQ	$SYS_arch_prctl, AX //系统调用编号
 	SYSCALL
 	CMPQ	AX, $0xfffffffffffff001
 	JLS	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1  // crash  //系统调用失败直接crash
 	RET
 
 TEXT runtime·osyield(SB),NOSPLIT,$0

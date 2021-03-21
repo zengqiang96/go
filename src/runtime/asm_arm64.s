@@ -30,13 +30,14 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
-	MOVD	$runtime·g0(SB), g
-	MOVD	RSP, R7
-	MOVD	$(-64*1024)(R7), R0
-	MOVD	R0, g_stackguard0(g)
-	MOVD	R0, g_stackguard1(g)
-	MOVD	R0, (g_stack+stack_lo)(g)
-	MOVD	R7, (g_stack+stack_hi)(g)
+  // 下面这段代码从系统线程的栈空分出一部分当作g0的栈，然后初始化g0的栈信息和stackgard
+	MOVD	$runtime·g0(SB), g  // g0的地址放入g
+	MOVD	RSP, R7 //  R7 = RSP
+	MOVD	$(-64*1024)(R7), R0 // R0 = RSP - 64*1024
+	MOVD	R0, g_stackguard0(g) // g0.stackguard0 = RSP - 64*1024
+	MOVD	R0, g_stackguard1(g) // g0.stackguard1 = RSP - 64*1024
+	MOVD	R0, (g_stack+stack_lo)(g) // g0.stack.lo = RSP - 64*1024
+	MOVD	R7, (g_stack+stack_hi)(g) // g0.stack.hi = RSP
 
 	// if there is a _cgo_init, call it using the gcc ABI.
 	MOVD	_cgo_init(SB), R12
