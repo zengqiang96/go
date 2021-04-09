@@ -14,6 +14,7 @@ import (
 
 // Package time knows the layout of this structure.
 // If this struct changes, adjust ../time/sleep.go:/runtimeTimer.
+// 与 ../time/sleep.go 中的 runtimeTimer 结构同步
 type timer struct {
 	// If this timer is on a heap, which P's heap it is on.
 	// puintptr rather than *p to match uintptr in the versions
@@ -203,6 +204,7 @@ func resetForSleep(gp *g, ut unsafe.Pointer) bool {
 	return true
 }
 
+// 把 t 添加到 timer 堆
 // startTimer adds t to the timer heap.
 //go:linkname startTimer time.startTimer
 func startTimer(t *timer) {
@@ -281,14 +283,14 @@ func doaddtimer(pp *p, t *timer) {
 		netpollGenericInit()
 	}
 
-	if t.pp != 0 {
+	if t.pp != 0 { // 创建timer时没有绑定p，如果p存在的话属于异常情况
 		throw("doaddtimer: P already set in timer")
 	}
 	t.pp.set(pp)
 	i := len(pp.timers)
 	pp.timers = append(pp.timers, t)
 	siftupTimer(pp.timers, i)
-	if t == pp.timers[0] {
+	if t == pp.timers[0] { // 如果新加入的timer是当前p中最新触发的，将t.when保存到pp.timer0When
 		atomic.Store64(&pp.timer0When, uint64(t.when))
 	}
 	atomic.Xadd(&pp.numTimers, 1)
@@ -1079,7 +1081,7 @@ func timeSleepUntil() (int64, *p) {
 // it will cause the program to crash with a mysterious
 // "panic holding locks" message. Instead, we panic while not
 // holding a lock.
-
+// 向上调整
 func siftupTimer(t []*timer, i int) {
 	if i >= len(t) {
 		badTimer()
@@ -1090,11 +1092,11 @@ func siftupTimer(t []*timer, i int) {
 	}
 	tmp := t[i]
 	for i > 0 {
-		p := (i - 1) / 4 // parent
-		if when >= t[p].when {
+		p := (i - 1) / 4       // parent 除4是因为使用的是4叉堆
+		if when >= t[p].when { // 新加入的timer.when > parent.when 符合小顶堆的性质，不需要调整
 			break
 		}
-		t[i] = t[p]
+		t[i] = t[p] // 新加入的timer.when < parent.when, 不符合小顶堆的性质，需要将新加入的timer向上作调整
 		i = p
 	}
 	if tmp != t[i] {
@@ -1102,6 +1104,7 @@ func siftupTimer(t []*timer, i int) {
 	}
 }
 
+// 向下调整
 func siftdownTimer(t []*timer, i int) {
 	n := len(t)
 	if i >= n {

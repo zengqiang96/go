@@ -659,6 +659,7 @@ type p struct {
 
 	_ uint32 // Alignment for atomic fields below
 
+	// timer堆上第一个timer的when
 	// The when field of the first entry on the timer heap.
 	// This is updated using atomic functions.
 	// This is 0 if the timer heap is empty.
@@ -701,15 +702,18 @@ type p struct {
 	// writing any stats. Its value is even when not, odd when it is.
 	statsSeq uint32
 
+	// timers的锁
 	// Lock for timers. We normally access the timers while running
 	// on this P, but the scheduler can also do it from a different P.
 	timersLock mutex
 
+	// P中的timer四叉堆
 	// Actions to take at some time. This is used to implement the
 	// standard library's time package.
 	// Must hold timersLock to access.
 	timers []*timer
 
+	// P timer四叉堆中的timer数量
 	// Number of timers in P's heap.
 	// Modified using atomic instructions.
 	numTimers uint32
