@@ -19,24 +19,24 @@ type timer struct {
 	// If this timer is on a heap, which P's heap it is on.
 	// puintptr rather than *p to match uintptr in the versions
 	// of this struct defined in other packages.
-	pp puintptr
+	pp puintptr // 当前P的指针
 
 	// Timer wakes up at when, and then at when+period, ... (period > 0 only)
 	// each time calling f(arg, now) in the timer goroutine, so f must be
 	// a well-behaved function and not block.
 	//
 	// when must be positive on an active timer.
-	when   int64
-	period int64
-	f      func(interface{}, uintptr)
-	arg    interface{}
+	when   int64                      // 当前计时器被唤醒的时间
+	period int64                      // 两次被唤醒的间隔
+	f      func(interface{}, uintptr) // 每当计时器被唤醒时都会调用的函数
+	arg    interface{}                // 计时器被唤醒时调用 f 传入的参数
 	seq    uintptr
 
 	// What to set the when field to in timerModifiedXX status.
-	nextwhen int64
+	nextwhen int64 // 计时器处于 timerModifiedXX 状态时，用于设置 when 字段；
 
 	// The status field holds one of the values below.
-	status uint32
+	status uint32 // 计时器的状态
 }
 
 // Code outside this file has to be careful in using a timer value.
@@ -118,43 +118,53 @@ type timer struct {
 
 // Values for the timer status field.
 const (
+	// 计时器尚未设置状态
 	// Timer has no status set yet.
 	timerNoStatus = iota
 
+	// 等待计时器启动
 	// Waiting for timer to fire.
 	// The timer is in some P's heap.
 	timerWaiting
 
+	// 运行计时器的回调方法
 	// Running the timer function.
 	// A timer will only have this status briefly.
 	timerRunning
 
+	// 计时器已经被删除，但仍然在某些 P 的堆中
 	// The timer is deleted and should be removed.
 	// It should not be run, but it is still in some P's heap.
 	timerDeleted
 
+	// 计时器即将被删除
 	// The timer is being removed.
 	// The timer will only have this status briefly.
 	timerRemoving
 
+	// 计时器已经停止，且不在任何 P 的堆中
 	// The timer has been stopped.
 	// It is not in any P's heap.
 	timerRemoved
 
+	// 计时器正在被修改
 	// The timer is being modified.
 	// The timer will only have this status briefly.
 	timerModifying
 
+	// 计时器已被修改为更早的时间
 	// The timer has been modified to an earlier time.
 	// The new when value is in the nextwhen field.
 	// The timer is in some P's heap, possibly in the wrong place.
 	timerModifiedEarlier
 
+	// 计时器已被修改为更晚的时间
 	// The timer has been modified to the same or a later time.
 	// The new when value is in the nextwhen field.
 	// The timer is in some P's heap, possibly in the wrong place.
 	timerModifiedLater
 
+	// 计时器已经被修改，正在被移动
 	// The timer has been modified and is being moved.
 	// The timer will only have this status briefly.
 	timerMoving
@@ -258,7 +268,7 @@ func addtimer(t *timer) {
 	if t.period < 0 {
 		throw("timer period must be non-negative")
 	}
-	if t.status != timerNoStatus {
+	if t.status != timerNoStatus { // 添加新的timer必须是timerNoStatus
 		throw("addtimer called with initialized timer")
 	}
 	t.status = timerWaiting
@@ -277,6 +287,7 @@ func addtimer(t *timer) {
 // doaddtimer adds t to the current P's heap.
 // The caller must have locked the timers for pp.
 func doaddtimer(pp *p, t *timer) {
+	// Timers依赖network poller，确保poller已经初始化了
 	// Timers rely on the network poller, so make sure the poller
 	// has started.
 	if netpollInited == 0 {
@@ -286,16 +297,17 @@ func doaddtimer(pp *p, t *timer) {
 	if t.pp != 0 { // 创建timer时没有绑定p，如果p存在的话属于异常情况
 		throw("doaddtimer: P already set in timer")
 	}
-	t.pp.set(pp)
+	t.pp.set(pp) // timer绑定到当前P的堆上
 	i := len(pp.timers)
 	pp.timers = append(pp.timers, t)
-	siftupTimer(pp.timers, i)
-	if t == pp.timers[0] { // 如果新加入的timer是当前p中最新触发的，将t.when保存到pp.timer0When
+	siftupTimer(pp.timers, i) // 调整4叉堆
+	if t == pp.timers[0] {    // 如果新加入的timer是当前p中最新触发的，将t.when保存到pp.timer0When
 		atomic.Store64(&pp.timer0When, uint64(t.when))
 	}
 	atomic.Xadd(&pp.numTimers, 1)
 }
 
+// 返回的是这个timer在执行前被移除的，已经执行过了就返回false，还没有执行就返回true
 // deltimer deletes the timer t. It may be on some other P, so we can't
 // actually remove it from the timers heap. We can only mark it as deleted.
 // It will be removed in due course by the P whose heap it is on.
@@ -303,34 +315,36 @@ func doaddtimer(pp *p, t *timer) {
 func deltimer(t *timer) bool {
 	for {
 		switch s := atomic.Load(&t.status); s {
-		case timerWaiting, timerModifiedLater:
+		case timerWaiting, timerModifiedLater: // timer还没启动或修改为更晚的时间
 			// Prevent preemption while the timer is in timerModifying.
 			// This could lead to a self-deadlock. See #38070.
 			mp := acquirem()
-			if atomic.Cas(&t.status, s, timerModifying) {
+			// timerWaiting/timerModifiedLater --> timerModifying --> timerDeleted
+			if atomic.Cas(&t.status, s, timerModifying) { // TODO 为什么要先切换为timerModifying
 				// Must fetch t.pp before changing status,
 				// as cleantimers in another goroutine
 				// can clear t.pp of a timerDeleted timer.
 				tpp := t.pp.ptr()
-				if !atomic.Cas(&t.status, timerModifying, timerDeleted) {
+				if !atomic.Cas(&t.status, timerModifying, timerDeleted) { // 置为timerDeleted状态
 					badTimer()
 				}
 				releasem(mp)
 				atomic.Xadd(&tpp.deletedTimers, 1)
 				// Timer was not yet run.
 				return true
-			} else {
-				releasem(mp)
+			} else { // 修改为timerModifying失败，说明t的状态已经不再是timerWaiting, timerModifiedLater了
+				releasem(mp) // 下一次再来处理
 			}
 		case timerModifiedEarlier:
 			// Prevent preemption while the timer is in timerModifying.
 			// This could lead to a self-deadlock. See #38070.
 			mp := acquirem()
+			// timerModifiedEarlier --> timerModifying --> timerDeleted
 			if atomic.Cas(&t.status, s, timerModifying) {
 				// Must fetch t.pp before setting status
 				// to timerDeleted.
 				tpp := t.pp.ptr()
-				atomic.Xadd(&tpp.adjustTimers, -1)
+				atomic.Xadd(&tpp.adjustTimers, -1) // timerModifiedEarlier的timer被stop了，所以需要将adjustTimers-1
 				if !atomic.Cas(&t.status, timerModifying, timerDeleted) {
 					badTimer()
 				}
@@ -339,12 +353,14 @@ func deltimer(t *timer) bool {
 				// Timer was not yet run.
 				return true
 			} else {
-				releasem(mp)
+				releasem(mp) // 下一次再来处理
 			}
 		case timerDeleted, timerRemoving, timerRemoved:
 			// Timer was already run.
+			// Timer 已经运行
 			return false
 		case timerRunning, timerMoving:
+			// 正在执行或被移动了，等待完成，下一次再来处理
 			// The timer is being run or moved, by a different P.
 			// Wait for it to complete.
 			osyield()
@@ -353,6 +369,7 @@ func deltimer(t *timer) bool {
 			// has already been run. Also see issue 21874.
 			return false
 		case timerModifying:
+			// 同时调用了deltimer，modtimer；等待其他调用完成，下一次再来处理
 			// Simultaneous calls to deltimer and modtimer.
 			// Wait for the other call to complete.
 			osyield()
@@ -398,8 +415,9 @@ func dodeltimer0(pp *p) {
 	if t := pp.timers[0]; t.pp.ptr() != pp {
 		throw("dodeltimer0: wrong P")
 	} else {
-		t.pp = 0
+		t.pp = 0 // 与P解绑
 	}
+	// 最后一个timer移动到堆顶，然后shiftdown对堆进行调整
 	last := len(pp.timers) - 1
 	if last > 0 {
 		pp.timers[0] = pp.timers[last]
@@ -409,6 +427,7 @@ func dodeltimer0(pp *p) {
 	if last > 0 {
 		siftdownTimer(pp.timers, 0)
 	}
+	// timer0被移除后，需要重置P的timer0when
 	updateTimer0When(pp)
 	atomic.Xadd(&pp.numTimers, -1)
 }
@@ -435,6 +454,7 @@ loop:
 			// Prevent preemption while the timer is in timerModifying.
 			// This could lead to a self-deadlock. See #38070.
 			mp = acquirem()
+			// timerWaiting, timerModifiedEarlier, timerModifiedLater --> timerModifying
 			if atomic.Cas(&t.status, status, timerModifying) {
 				pending = true // timer not yet run
 				break loop
@@ -447,6 +467,7 @@ loop:
 
 			// Timer was already run and t is no longer in a heap.
 			// Act like addtimer.
+			// timerNoStatus, timerRemoved --> timerModifying
 			if atomic.Cas(&t.status, status, timerModifying) {
 				wasRemoved = true
 				pending = false // timer already run or stopped
@@ -457,6 +478,7 @@ loop:
 			// Prevent preemption while the timer is in timerModifying.
 			// This could lead to a self-deadlock. See #38070.
 			mp = acquirem()
+			// timerDeleted --> timerModifying
 			if atomic.Cas(&t.status, status, timerModifying) {
 				atomic.Xadd(&t.pp.ptr().deletedTimers, -1)
 				pending = false // timer already stopped
@@ -466,11 +488,11 @@ loop:
 		case timerRunning, timerRemoving, timerMoving:
 			// The timer is being run or moved, by a different P.
 			// Wait for it to complete.
-			osyield()
+			osyield() // 等待状态改变
 		case timerModifying:
 			// Multiple simultaneous calls to modtimer.
 			// Wait for the other call to complete.
-			osyield()
+			osyield() // 等待状态改变
 		default:
 			badTimer()
 		}
@@ -481,7 +503,7 @@ loop:
 	t.arg = arg
 	t.seq = seq
 
-	if wasRemoved {
+	if wasRemoved { // timer已经被移除了
 		t.when = when
 		pp := getg().m.p.ptr()
 		lock(&pp.timersLock)
@@ -493,6 +515,7 @@ loop:
 		releasem(mp)
 		wakeNetPoller(when)
 	} else {
+		// TODO 为什么会处理到其他P的timer？
 		// The timer is in some other P's heap, so we can't change
 		// the when field. If we did, the other P's heap would
 		// be out of order. So we put the new when value in the
@@ -550,6 +573,10 @@ func resettimer(t *timer, when int64) bool {
 // programs that create and delete timers; leaving them in the heap
 // slows down addtimer. Reports whether no timer problems were found.
 // The caller must have locked the timers for pp.
+
+// cleantimers会出现下面2种状态的变化，也就是清除已经删除的，移动timer0
+// timerDeleted -> timerRemoving -> timerRemoved
+// timerModifiedEarlier/timerModifiedLater -> timerMoving -> timerWaiting
 func cleantimers(pp *p) {
 	gp := getg()
 	for {
@@ -565,12 +592,13 @@ func cleantimers(pp *p) {
 			return
 		}
 
-		t := pp.timers[0]
+		t := pp.timers[0] // 堆顶，when最小，最早发生的timer
 		if t.pp.ptr() != pp {
 			throw("cleantimers: bad p")
 		}
 		switch s := atomic.Load(&t.status); s {
 		case timerDeleted:
+			// timerDeleted --> timerRemoving --> 从堆中删除timer --> timerRemoved
 			if !atomic.Cas(&t.status, s, timerRemoving) {
 				continue
 			}
@@ -579,17 +607,21 @@ func cleantimers(pp *p) {
 				badTimer()
 			}
 			atomic.Xadd(&pp.deletedTimers, -1)
-		case timerModifiedEarlier, timerModifiedLater:
+		case timerModifiedEarlier, timerModifiedLater: // TODO 如果modTimer将非timer0的when改成了比timer0更先触发的时候是怎么处理的
+			// timerMoving --> 调整 timer 的时间 --> timerWaiting
+			// 此时 timer 被调整为更早或更晚，将原先的 timer 进行删除，再重新添加
 			if !atomic.Cas(&t.status, s, timerMoving) {
 				continue
 			}
 			// Now we can change the when field.
 			t.when = t.nextwhen
 			// Move t to the right position.
+			// 删除原来的
 			dodeltimer0(pp)
+			// 然后再重新添加
 			doaddtimer(pp, t)
 			if s == timerModifiedEarlier {
-				atomic.Xadd(&pp.adjustTimers, -1)
+				atomic.Xadd(&pp.adjustTimers, -1) // 如果t0之前是timerModifiedEarlier，因为已经调整了t0，所以需要将adjustTimers减1
 			}
 			if !atomic.Cas(&t.status, timerMoving, timerWaiting) {
 				badTimer()

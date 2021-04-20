@@ -718,6 +718,7 @@ type p struct {
 	// Modified using atomic instructions.
 	numTimers uint32
 
+	// 在 P 堆中 timerModifiedEarlier timers 的数量。
 	// Number of timerModifiedEarlier timers on P's heap.
 	// This should only be modified while holding timersLock,
 	// or while the timer status is in a transient state
