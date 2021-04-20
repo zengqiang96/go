@@ -503,7 +503,7 @@ loop:
 	t.arg = arg
 	t.seq = seq
 
-	if wasRemoved { // timer已经被移除了
+	if wasRemoved {
 		t.when = when
 		pp := getg().m.p.ptr()
 		lock(&pp.timersLock)
@@ -574,6 +574,7 @@ func resettimer(t *timer, when int64) bool {
 // slows down addtimer. Reports whether no timer problems were found.
 // The caller must have locked the timers for pp.
 
+// 清理队列头部的timer，与adjusttimers方法类似，只是adjusttimers会遍历搜索的timers
 // cleantimers会出现下面2种状态的变化，也就是清除已经删除的，移动timer0
 // timerDeleted -> timerRemoving -> timerRemoved
 // timerModifiedEarlier/timerModifiedLater -> timerMoving -> timerWaiting
@@ -687,6 +688,7 @@ func moveTimers(pp *p, timers []*timer) {
 	}
 }
 
+// 与cleantimers类似，只是 cleantimers只处理队列头部的timer
 // adjusttimers looks through the timers in the current P's heap for
 // any timers that have been modified to run earlier, and puts them in
 // the correct place in the heap. While looking for those timers,
@@ -805,6 +807,7 @@ func nobarrierWakeTime(pp *p) int64 {
 	return next
 }
 
+// runtimer 检查timers四叉堆顶部的timer
 // runtimer examines the first timer in timers. If it is ready based on now,
 // it runs the timer and removes or updates it.
 // Returns 0 if it ran a timer, -1 if there are no more timers, or the time
@@ -820,11 +823,11 @@ func runtimer(pp *p, now int64) int64 {
 		}
 		switch s := atomic.Load(&t.status); s {
 		case timerWaiting:
-			if t.when > now {
+			if t.when > now { // 还没到时间执行
 				// Not ready to run.
 				return t.when
 			}
-
+			// 该执行这个timer了
 			if !atomic.Cas(&t.status, s, timerRunning) {
 				continue
 			}
@@ -833,7 +836,7 @@ func runtimer(pp *p, now int64) int64 {
 			runOneTimer(pp, t, now)
 			return 0
 
-		case timerDeleted:
+		case timerDeleted: // 删除已经执行了的timer
 			if !atomic.Cas(&t.status, s, timerRemoving) {
 				continue
 			}
@@ -846,7 +849,7 @@ func runtimer(pp *p, now int64) int64 {
 				return -1
 			}
 
-		case timerModifiedEarlier, timerModifiedLater:
+		case timerModifiedEarlier, timerModifiedLater: // 调整timerModifiedEarlier, timerModifiedLater timer的时间
 			if !atomic.Cas(&t.status, s, timerMoving) {
 				continue
 			}
@@ -862,7 +865,7 @@ func runtimer(pp *p, now int64) int64 {
 
 		case timerModifying:
 			// Wait for modification to complete.
-			osyield()
+			osyield() // 等到其他操作结束
 
 		case timerNoStatus, timerRemoved:
 			// Should not see a new or inactive timer on the heap.
@@ -894,22 +897,22 @@ func runOneTimer(pp *p, t *timer, now int64) {
 	arg := t.arg
 	seq := t.seq
 
-	if t.period > 0 {
+	if t.period > 0 { // period > 0 说明是ticker，需要多次触发
 		// Leave in heap but adjust next time to fire.
 		delta := t.when - now
-		t.when += t.period * (1 + -delta/t.period)
-		if t.when < 0 { // check for overflow.
+		t.when += t.period * (1 + -delta/t.period) // 修改下一次触发的时间
+		if t.when < 0 {                            // check for overflow.
 			t.when = maxWhen
 		}
-		siftdownTimer(pp.timers, 0)
-		if !atomic.Cas(&t.status, timerRunning, timerWaiting) {
+		siftdownTimer(pp.timers, 0)                             // 改变了timer[0].when，所以调整四叉堆
+		if !atomic.Cas(&t.status, timerRunning, timerWaiting) { // 将状态改为timerWaiting
 			badTimer()
 		}
 		updateTimer0When(pp)
-	} else {
+	} else { // period == 0 说明是timer，是一次性触发的，需要删除
 		// Remove from heap.
 		dodeltimer0(pp)
-		if !atomic.Cas(&t.status, timerRunning, timerNoStatus) {
+		if !atomic.Cas(&t.status, timerRunning, timerNoStatus) { // 状态修改为timerNoStatus
 			badTimer()
 		}
 	}
@@ -924,7 +927,7 @@ func runOneTimer(pp *p, t *timer, now int64) {
 	}
 
 	unlock(&pp.timersLock)
-
+	// 运行计时器中存储的函数
 	f(arg, seq)
 
 	lock(&pp.timersLock)
@@ -935,6 +938,8 @@ func runOneTimer(pp *p, t *timer, now int64) {
 	}
 }
 
+// 删除处理器全部被标记为 timerDeleted 的计时器
+// 避免堆中出现大量长时间运行的计时器，该函数和 runtime.moveTimers 也是唯二会遍历计时器堆的函数。
 // clearDeletedTimers removes all deleted timers from the P's timer heap.
 // This is used to avoid clogging up the heap if the program
 // starts a lot of long-running timers and then stops them.

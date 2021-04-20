@@ -3239,7 +3239,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 		next = nextAdj
 	}
 
-	if next == 0 {
+	if next == 0 { // 没有timer需要执行和调整
 		// No timers to run or adjust.
 		return now, 0, false
 	}
@@ -3247,7 +3247,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	if now == 0 {
 		now = nanotime()
 	}
-	if now < next {
+	if now < next { // 最快的 timer还没到 执行的时间
 		// Next timer is not ready to run, but keep going
 		// if we would clear deleted timers.
 		// This corresponds to the condition below where
@@ -3260,7 +3260,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	lock(&pp.timersLock)
 
 	if len(pp.timers) > 0 {
-		adjusttimers(pp, now)
+		adjusttimers(pp, now) // 删除已经执行的timer，调整timerModifiedEarlier 和 timerModifiedLater 的计时器的时间
 		for len(pp.timers) > 0 {
 			// Note that runtimer may temporarily unlock
 			// pp.timersLock.
@@ -3277,6 +3277,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	// If this is the local P, and there are a lot of deleted timers,
 	// clear them out. We only do this for the local P to reduce
 	// lock contention on timersLock.
+	// 当前 Goroutine 的处理器和传入的处理器相同,并且处理器中删除的计时器是堆中计时器的 1/4 以上，
 	if pp == getg().m.p.ptr() && int(atomic.Load(&pp.deletedTimers)) > len(pp.timers)/4 {
 		clearDeletedTimers(pp)
 	}
