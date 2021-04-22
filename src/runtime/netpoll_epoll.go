@@ -158,7 +158,7 @@ retry:
 			continue
 		}
 
-		// 调用 runtime.netpollBreak 触发的事件
+		// runtime.netpollBreak 触发的事件
 		if *(**uintptr)(unsafe.Pointer(&ev.data)) == &netpollBreakRd {
 			if ev.events != _EPOLLIN {
 				println("runtime: netpoll: break fd ready for", ev.events)

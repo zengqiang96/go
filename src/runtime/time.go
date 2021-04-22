@@ -574,7 +574,11 @@ func resettimer(t *timer, when int64) bool {
 // slows down addtimer. Reports whether no timer problems were found.
 // The caller must have locked the timers for pp.
 
-// 清理队列头部的timer，与adjusttimers方法类似，只是adjusttimers会遍历搜索的timers
+// 清理堆顶部的timer，与adjusttimers方法类似，只是adjusttimers会遍历搜索的timers
+// 注意cleantimers清理的是堆顶部的timer，只要顶部是timerDeleted，timerModifiedEarlier/timerModifiedLater的timer都会处理
+// 处理完后会调整堆，再处理堆顶部的timer，所以不只是处理1个timer，
+// 当堆前面的timer是timerDeleted，timerModifiedEarlier/timerModifiedLater状态的时候都会进行处理
+// adjusttimers不管是什么状态的timer，都会便利处理一遍
 // cleantimers会出现下面2种状态的变化，也就是清除已经删除的，移动timer0
 // timerDeleted -> timerRemoving -> timerRemoved
 // timerModifiedEarlier/timerModifiedLater -> timerMoving -> timerWaiting
