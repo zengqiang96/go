@@ -169,6 +169,7 @@ func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (rsa sysc
 }
 
 func (fd *netFD) accept() (netfd *netFD, err error) {
+	// 调用netfd.FD的Accept接受新的 socket 连接，返回 socket 的 fd
 	d, rsa, errcall, err := fd.pfd.Accept()
 	if err != nil {
 		if errcall != "" {
@@ -177,10 +178,12 @@ func (fd *netFD) accept() (netfd *netFD, err error) {
 		return nil, err
 	}
 
+	// 构造一个新的netfd
 	if netfd, err = newFD(d, fd.family, fd.sotype, fd.net); err != nil {
 		poll.CloseFunc(d)
 		return nil, err
 	}
+	// 调用 netFD 的 init 方法完成初始化
 	if err = netfd.init(); err != nil {
 		netfd.Close()
 		return nil, err

@@ -29,8 +29,9 @@ var (
 	netpollWakeSig uint32 // used to avoid duplicate calls of netpollBreak
 )
 
+// 全局的初始化
 func netpollinit() {
-	epfd = epollcreate1(_EPOLL_CLOEXEC)
+	epfd = epollcreate1(_EPOLL_CLOEXEC) // // 创建一个新的 epoll 文件描述符，全局的epfd
 	if epfd < 0 {
 		epfd = epollcreate(1024)
 		if epfd < 0 {
@@ -39,6 +40,9 @@ func netpollinit() {
 		}
 		closeonexec(epfd)
 	}
+	// 创建一个用于通信的管道
+	// 初始化的管道为我们提供了中断多路复用等待文件描述符中事件的方法
+	// runtime.netpollBreak 会向管道中写入数据唤醒 epoll：
 	r, w, errno := nonblockingPipe()
 	if errno != 0 {
 		println("runtime: pipe failed with", -errno)
@@ -48,6 +52,7 @@ func netpollinit() {
 		events: _EPOLLIN,
 	}
 	*(**uintptr)(unsafe.Pointer(&ev.data)) = &netpollBreakRd
+	// 将读取数据的文件描述符加入监听
 	errno = epollctl(epfd, _EPOLL_CTL_ADD, r, &ev)
 	if errno != 0 {
 		println("runtime: epollctl failed with", -errno)
@@ -61,6 +66,7 @@ func netpollIsPollDescriptor(fd uintptr) bool {
 	return fd == uintptr(epfd) || fd == netpollBreakRd || fd == netpollBreakWr
 }
 
+// 将fd的可读和可写加入到epfd进行监听
 func netpollopen(fd uintptr, pd *pollDesc) int32 {
 	var ev epollevent
 	ev.events = _EPOLLIN | _EPOLLOUT | _EPOLLRDHUP | _EPOLLET
@@ -77,6 +83,7 @@ func netpollarm(pd *pollDesc, mode int) {
 	throw("runtime: unused")
 }
 
+// 向管道中写入数据，唤醒epoll
 // netpollBreak interrupts an epollwait.
 func netpollBreak() {
 	if atomic.Cas(&netpollWakeSig, 0, 1) {
@@ -103,8 +110,14 @@ func netpollBreak() {
 // delay < 0: blocks indefinitely
 // delay == 0: does not block, just polls
 // delay > 0: block for up to that many nanoseconds
+// delay < 0 无限block等待
+// delay == 0 不会block
+// delay block 最多delay时间
+// runtime.netpoll 返回的 Goroutine 列表都会被 runtime.injectglist 注入到处理器或者全局的运行队列上。
+// 因为系统监控 Goroutine 直接运行在线程上，所以它获取的 Goroutine 列表会直接加入全局的运行队列，
+// 其他 Goroutine 获取的列表都会加入 Goroutine 所在处理器的运行队列上。
 func netpoll(delay int64) gList {
-	if epfd == -1 {
+	if epfd == -1 { // 没有epfd 相当于netpoll没有初始化
 		return gList{}
 	}
 	var waitms int32
@@ -123,8 +136,9 @@ func netpoll(delay int64) gList {
 	}
 	var events [128]epollevent
 retry:
+	// 等待文件描述符转换成可读或者可写
 	n := epollwait(epfd, &events[0], int32(len(events)), waitms)
-	if n < 0 {
+	if n < 0 { // 如果返回了负值，可能会返回空的 Goroutine 列表或者重新调用 epollwait 陷入等待：
 		if n != -_EINTR {
 			println("runtime: epollwait on fd", epfd, "failed with", -n)
 			throw("runtime: netpoll failed")
@@ -136,6 +150,7 @@ retry:
 		}
 		goto retry
 	}
+	// 当 epollwait 系统调用返回的值大于 0 时，意味着被监控的文件描述符出现了待处理的事件
 	var toRun gList
 	for i := int32(0); i < n; i++ {
 		ev := &events[i]
@@ -143,6 +158,7 @@ retry:
 			continue
 		}
 
+		// 调用 runtime.netpollBreak 触发的事件
 		if *(**uintptr)(unsafe.Pointer(&ev.data)) == &netpollBreakRd {
 			if ev.events != _EPOLLIN {
 				println("runtime: netpoll: break fd ready for", ev.events)
@@ -159,6 +175,7 @@ retry:
 			continue
 		}
 
+		// 另一种是其他文件描述符的正常读写事件
 		var mode int32
 		if ev.events&(_EPOLLIN|_EPOLLRDHUP|_EPOLLHUP|_EPOLLERR) != 0 {
 			mode += 'r'

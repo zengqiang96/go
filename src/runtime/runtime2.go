@@ -430,7 +430,7 @@ type g struct {
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
 	goid         int64
 	// schedlink字段指向全局运行队列中的下一个g，
-	//所有位于全局运行队列中的g形成一个链表
+	// 所有位于全局运行队列中的g形成一个链表
 	schedlink  guintptr
 	waitsince  int64      // approx time when the g become blocked
 	waitreason waitReason // if status==Gwaiting

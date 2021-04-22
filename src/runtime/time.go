@@ -287,7 +287,7 @@ func addtimer(t *timer) {
 // doaddtimer adds t to the current P's heap.
 // The caller must have locked the timers for pp.
 func doaddtimer(pp *p, t *timer) {
-	// Timers依赖network poller，确保poller已经初始化了
+	// Timers依赖network poller，确保netpoll经初始化了
 	// Timers rely on the network poller, so make sure the poller
 	// has started.
 	if netpollInited == 0 {

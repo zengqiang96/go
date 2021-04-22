@@ -16,6 +16,7 @@ import (
 // socket returns a network file descriptor that is ready for
 // asynchronous I/O using the network poller.
 func socket(ctx context.Context, net string, family, sotype, proto int, ipv6only bool, laddr, raddr sockaddr, ctrlFn func(string, string, syscall.RawConn) error) (fd *netFD, err error) {
+	// 创建一个socket
 	s, err := sysSocket(family, sotype, proto)
 	if err != nil {
 		return nil, err
@@ -24,6 +25,7 @@ func socket(ctx context.Context, net string, family, sotype, proto int, ipv6only
 		poll.CloseFunc(s)
 		return nil, err
 	}
+	// 创建fd
 	if fd, err = newFD(s, family, sotype, net); err != nil {
 		poll.CloseFunc(s)
 		return nil, err
@@ -54,6 +56,7 @@ func socket(ctx context.Context, net string, family, sotype, proto int, ipv6only
 	if laddr != nil && raddr == nil {
 		switch sotype {
 		case syscall.SOCK_STREAM, syscall.SOCK_SEQPACKET:
+			// 调用 netFD的listenStream方法完成对 socket 的 bind&listen和netFD的初始化
 			if err := fd.listenStream(laddr, listenerBacklog(), ctrlFn); err != nil {
 				fd.Close()
 				return nil, err
@@ -190,12 +193,15 @@ func (fd *netFD) listenStream(laddr sockaddr, backlog int, ctrlFn func(string, s
 			return err
 		}
 	}
+	// 完成绑定操作
 	if err = syscall.Bind(fd.pfd.Sysfd, lsa); err != nil {
 		return os.NewSyscallError("bind", err)
 	}
+	// 进行监听操作
 	if err = listenFunc(fd.pfd.Sysfd, backlog); err != nil {
 		return os.NewSyscallError("listen", err)
 	}
+	// 初始化fd
 	if err = fd.init(); err != nil {
 		return err
 	}

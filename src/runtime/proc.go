@@ -306,6 +306,7 @@ func goschedguarded() {
 	mcall(goschedguarded_m)
 }
 
+// 将当前的goroutine变成waiting，在系统栈上执行unlockf
 // Puts the current goroutine into a waiting state and calls unlockf on the
 // system stack.
 //
@@ -2514,6 +2515,7 @@ func gcstopm() {
 			throw("gcstopm: negative nmspinning")
 		}
 	}
+	// 解绑p和m
 	_p_ := releasep()
 	lock(&sched.lock)
 	_p_.status = _Pgcstop
@@ -2587,6 +2589,7 @@ top:
 		runSafePointFn()
 	}
 
+	// 检查是否有到期的timer需要执行
 	now, pollUntil, _ := checkTimers(_p_, 0)
 
 	if fingwait && fingwake {
@@ -2622,10 +2625,11 @@ top:
 	// blocked thread (e.g. it has already returned from netpoll, but does
 	// not set lastpoll yet), this thread will do blocking netpoll below
 	// anyway.
+	// 看看网络上是否有需要执行的g
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Load64(&sched.lastpoll) != 0 {
 		if list := netpoll(0); !list.empty() { // non-blocking
 			gp := list.pop()
-			injectglist(&list)
+			injectglist(&list) // 将glist放入到p中
 			casgstatus(gp, _Gwaiting, _Grunnable)
 			if trace.enabled {
 				traceGoUnpark(gp, 0)
@@ -2983,7 +2987,7 @@ func wakeNetPoller(when int64) {
 		// poll is expected to run. This can have a spurious wakeup
 		// but should never miss a wakeup.
 		pollerPollUntil := int64(atomic.Load64(&sched.pollUntil))
-		if pollerPollUntil == 0 || pollerPollUntil > when {
+		if pollerPollUntil == 0 || pollerPollUntil > when { // 网络轮询器poll > timer的触发时间，立即唤醒netpoll
 			netpollBreak()
 		}
 	} else {
@@ -3029,6 +3033,7 @@ func injectglist(glist *gList) {
 		}
 	}
 
+	// 将所有g置为_Grunnable
 	// Mark all the goroutines as runnable before we put them
 	// on the run queues.
 	head := glist.head.ptr()
@@ -3052,6 +3057,7 @@ func injectglist(glist *gList) {
 		}
 	}
 
+	// 当前m没有关联p，将gQueue添加到全局runQueue
 	pp := getg().m.p.ptr()
 	if pp == nil {
 		lock(&sched.lock)
@@ -3083,6 +3089,7 @@ func injectglist(glist *gList) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
+// 调度循环
 func schedule() {
 	_g_ := getg() //_g_ = 每个工作线程m对应的g0，初始化时是m0的g0
 
@@ -3260,8 +3267,8 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	lock(&pp.timersLock)
 
 	if len(pp.timers) > 0 {
-		adjusttimers(pp, now) // 删除已经执行的timer，调整timerModifiedEarlier 和 timerModifiedLater 的计时器的时间
-		for len(pp.timers) > 0 {
+		adjusttimers(pp, now)    // 删除已经执行的timer，调整timerModifiedEarlier 和 timerModifiedLater 的计时器的时间
+		for len(pp.timers) > 0 { // 执行所有到期的timer
 			// Note that runtimer may temporarily unlock
 			// pp.timersLock.
 			if tw := runtimer(pp, now); tw != 0 {
@@ -3303,7 +3310,7 @@ func park_m(gp *g) {
 	casgstatus(gp, _Grunning, _Gwaiting)
 	dropg()
 
-	if fn := _g_.m.waitunlockf; fn != nil {
+	if fn := _g_.m.waitunlockf; fn != nil { // _g_m.waitunlockf 不等于空，需要执行改函数 // netpoll wait的时候会将阻塞在fd的groutine设置到fd.rg或wg字段
 		ok := fn(gp, _g_.m.waitlock)
 		_g_.m.waitunlockf = nil
 		_g_.m.waitlock = nil
