@@ -11,7 +11,7 @@ import (
 )
 
 type slice struct {
-	array unsafe.Pointer
+	array unsafe.Pointer // 底层数组指针
 	len   int
 	cap   int
 }

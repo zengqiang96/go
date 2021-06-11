@@ -6214,9 +6214,13 @@ func sync_runtime_canSpin(i int) bool {
 	// GOMAXPROCS>1 and there is at least one other running P and local runq is empty.
 	// As opposed to runtime mutex we don't do passive spinning here,
 	// because there can be work on global runq or on other Ps.
+	// 当前 Goroutine 为了获取该锁进入自旋的次数不能大于四次；
+	// 必须运行在多 CPU 的机器上；
+	// 当前机器上至少存在一个正在运行的处理器 P
 	if i >= active_spin || ncpu <= 1 || gomaxprocs <= int32(sched.npidle+sched.nmspinning)+1 {
 		return false
 	}
+	// 并且处理的运行队列为空；
 	if p := getg().m.p.ptr(); !runqempty(p) {
 		return false
 	}

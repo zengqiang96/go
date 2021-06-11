@@ -249,7 +249,7 @@ var goroutines int32
 // propagateCancel arranges for child to be canceled when parent is.
 func propagateCancel(parent Context, child canceler) {
 	done := parent.Done()
-	if done == nil {
+	if done == nil { // 父上下文不会触发取消信号
 		return // parent is never canceled
 	}
 
@@ -273,12 +273,12 @@ func propagateCancel(parent Context, child canceler) {
 			p.children[child] = struct{}{}
 		}
 		p.mu.Unlock()
-	} else {
+	} else { // 当父上下文是开发者自定义的类型
 		atomic.AddInt32(&goroutines, +1)
 		go func() {
 			select {
-			case <-parent.Done():
-				child.cancel(false, parent.Err())
+			case <-parent.Done(): // 监听parent
+				child.cancel(false, parent.Err()) // parent取消了child.cancel()也取消
 			case <-child.Done():
 			}
 		}()
@@ -351,10 +351,10 @@ type cancelCtx struct {
 }
 
 func (c *cancelCtx) Value(key interface{}) interface{} {
-	if key == &cancelCtxKey {
+	if key == &cancelCtxKey { // 特殊的cancelCtxKey，用于寻找最近可取消的Ctx 见parentCancelCtx方法实现
 		return c
 	}
-	return c.Context.Value(key)
+	return c.Context.Value(key) // 继续向上寻找
 }
 
 func (c *cancelCtx) Done() <-chan struct{} {

@@ -1151,15 +1151,15 @@ func GC() {
 	// Wait until the current sweep termination, mark, and mark
 	// termination complete.
 	n := atomic.Load(&work.cycles)
-	gcWaitOnMark(n)
+	gcWaitOnMark(n) // 等待上一轮的标记终止
 
 	// We're now in sweep N or later. Trigger GC cycle N+1, which
 	// will first finish sweep N if necessary and then enter sweep
 	// termination N+1.
-	gcStart(gcTrigger{kind: gcTriggerCycle, n: n + 1})
+	gcStart(gcTrigger{kind: gcTriggerCycle, n: n + 1}) // 触发GC
 
 	// Wait for mark termination N+1 to complete.
-	gcWaitOnMark(n + 1)
+	gcWaitOnMark(n + 1) // 等待本轮 标记终止
 
 	// Finish sweep N+1 before returning. We do this both to
 	// complete the cycle and because runtime.GC() is often used
@@ -1243,16 +1243,21 @@ const (
 	// gcTriggerHeap indicates that a cycle should be started when
 	// the heap size reaches the trigger heap size computed by the
 	// controller.
+	// 当前分配的内存达到一定阈值时触发，这个阈值在每次GC过后都会根据堆内存的增长情况和CPU占用率来调整；
+	// 主要是 mallocgc() 函数,其中分析内存对象大小又分多种情况，建议看下源码实现。
 	gcTriggerHeap gcTriggerKind = iota
 
 	// gcTriggerTime indicates that a cycle should be started when
 	// it's been more than forcegcperiod nanoseconds since the
 	// previous GC cycle.
+	// 自从上次GC后间隔时间达到了runtime.forcegcperiod 时间（默认为2分钟），将启动GC；
+	// 主要是 sysmon 监控线程
 	gcTriggerTime
 
 	// gcTriggerCycle indicates that a cycle should be started if
 	// we have not yet started cycle number gcTrigger.n (relative
 	// to work.cycles).
+	// 如果当前没有开启垃圾收集，则启动GC；主要是调用函数 runtime.GC()
 	gcTriggerCycle
 )
 
@@ -1265,15 +1270,18 @@ func (t gcTrigger) test() bool {
 	}
 	switch t.kind {
 	case gcTriggerHeap:
+		// 堆内存不足
 		// Non-atomic access to heap_live for performance. If
 		// we are going to trigger on this, this thread just
 		// atomically wrote heap_live anyway and we'll see our
 		// own write.
+		// 对于 memstats.gc_trigger 变量的值是动态进行调整的，见 gcSetTriggerRatio() 函数。
 		return memstats.heap_live >= memstats.gc_trigger
 	case gcTriggerTime:
 		if gcpercent < 0 {
 			return false
 		}
+		// 大于2分钟
 		lastgc := int64(atomic.Load64(&memstats.last_gc_nanotime))
 		return lastgc != 0 && t.now-lastgc > forcegcperiod
 	case gcTriggerCycle:

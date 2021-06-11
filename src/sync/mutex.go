@@ -23,8 +23,8 @@ func throw(string) // provided by runtime
 //
 // A Mutex must not be copied after first use.
 type Mutex struct {
-	state int32
-	sema  uint32
+	state int32  // 当前互斥锁的状态
+	sema  uint32 // 用于控制锁状态的信号量
 }
 
 // A Locker represents an object that can be locked and unlocked.
@@ -70,6 +70,7 @@ const (
 // If the lock is already in use, the calling goroutine
 // blocks until the mutex is available.
 func (m *Mutex) Lock() {
+	// 当锁的状态是 0 时，将 mutexLocked 位置成 1
 	// Fast path: grab unlocked mutex.
 	if atomic.CompareAndSwapInt32(&m.state, 0, mutexLocked) {
 		if race.Enabled {
@@ -90,6 +91,8 @@ func (m *Mutex) lockSlow() {
 	for {
 		// Don't spin in starvation mode, ownership is handed off to waiters
 		// so we won't be able to acquire the mutex anyway.
+		// old&(mutexLocked|mutexStarving) == mutexLocked  说明已经被其他g锁住了，并且锁并不是饥饿模式
+		// 才有可能进入自旋，要进入自旋还得runtime_canSpin返回true
 		if old&(mutexLocked|mutexStarving) == mutexLocked && runtime_canSpin(iter) {
 			// Active spinning makes sense.
 			// Try to set mutexWoken flag to inform Unlock
@@ -98,6 +101,7 @@ func (m *Mutex) lockSlow() {
 				atomic.CompareAndSwapInt32(&m.state, old, old|mutexWoken) {
 				awoke = true
 			}
+			// 调用30次PAUSE指令
 			runtime_doSpin()
 			iter++
 			old = m.state
