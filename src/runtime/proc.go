@@ -266,6 +266,7 @@ func os_beforeExit() {
 	}
 }
 
+// 运行时会在应用程序启动时在后台开启一个用于强制触发垃圾收集的 Goroutine
 // start forcegc helper goroutine
 func init() {
 	go forcegchelper()
@@ -280,6 +281,7 @@ func forcegchelper() {
 			throw("forcegc: phase error")
 		}
 		atomic.Store(&forcegc.idle, 1)
+		// 为了减少对计算资源的占用，大部分时间都是休眠状态，在满足垃圾回收条件时，会被runtime.sysmon唤醒，见#5313行
 		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceEvGoBlock, 1)
 		// this goroutine is explicitly resumed by sysmon
 		if debug.gctrace > 0 {
