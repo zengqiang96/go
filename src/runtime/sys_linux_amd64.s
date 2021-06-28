@@ -676,7 +676,7 @@ TEXT runtime·settls(SB),NOSPLIT,$32
 	RET
 
 TEXT runtime·osyield(SB),NOSPLIT,$0
-	MOVL	$SYS_sched_yield, AX
+	MOVL	$SYS_sched_yield, AX // syscall entry, RAX寄存器存放 系统调用编号/返回值
 	SYSCALL
 	RET
 

@@ -3553,16 +3553,25 @@ func reentersyscall(pc, sp uintptr) {
 
 	// Disable preemption because during this function g is in Gsyscall status,
 	// but can have inconsistent g->sched, do not let GC observe it.
+	// 需要禁止 g 的抢占
 	_g_.m.locks++
 
 	// Entersyscall must not call any function that might split/grow the stack.
 	// (See details in comment above.)
 	// Catch calls that might, by replacing the stack guard with something that
 	// will trip any stack check and leaving a flag to tell newstack to die.
+	// entersyscall 中不能调用任何会导致栈增长/分裂的函数
 	_g_.stackguard0 = stackPreempt
+	// 设置 throwsplit，在 newstack 中，如果发现 throwsplit 是 true
+	// 会直接 crash
+	// 下面的代码是 newstack 里的
+	// if thisg.m.curg.throwsplit {
+	//     throw("runtime: stack split at bad time")
+	// }
 	_g_.throwsplit = true
 
 	// Leave SP around for GC and traceback.
+	// 保存现场，在 syscall 之后会依据这些数据恢复现场
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
@@ -3612,6 +3621,7 @@ func reentersyscall(pc, sp uintptr) {
 //
 // This is exported via linkname to assembly in the syscall package.
 //
+// syscall 库和 cgo 调用的标准入口
 //go:nosplit
 //go:linkname entersyscall
 func entersyscall() {
@@ -3705,6 +3715,11 @@ func entersyscallblock_handoff() {
 //
 // This is exported via linkname to assembly in the syscall package.
 //
+// g 已经退出了 syscall
+// 需要准备让 g 在 cpu 上重新运行
+// 这个函数只会在 syscall 库中被调用，在 runtime 里用的 low-level syscall
+// 不会用到
+// 不能有 write barrier，因为 P 可能已经被偷走了
 //go:nosplit
 //go:nowritebarrierrec
 //go:linkname exitsyscall
@@ -3859,6 +3874,8 @@ func exitsyscallfast_pidle() bool {
 	return false
 }
 
+// 在 exitsyscallfast 中吃瘪了，没办法，慢慢来
+// 把 g 的状态设置成 runnable，先进 runq 等着
 // exitsyscall slow path on g0.
 // Failed to acquire P, enqueue gp as runnable.
 //
