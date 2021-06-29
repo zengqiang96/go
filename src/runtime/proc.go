@@ -2330,7 +2330,7 @@ func startm(_p_ *p, spinning bool) {
 			return
 		}
 	}
-	nmp := mget()
+	nmp := mget() // 从midle中获取m
 	if nmp == nil {
 		// No M is available, we must drop sched.lock and call newm.
 		// However, we already own a P to assign to the M.
@@ -2385,6 +2385,7 @@ func handoffp(_p_ *p) {
 	// findrunnable would return a G to run on _p_.
 
 	// if it has local work, start it straight away
+	// 如果p的本地队列不为空，使用新的m来运行p
 	if !runqempty(_p_) || sched.runqsize != 0 {
 		startm(_p_, false)
 		return
@@ -2433,7 +2434,7 @@ func handoffp(_p_ *p) {
 	// The scheduler lock cannot be held when calling wakeNetPoller below
 	// because wakeNetPoller may call wakep which may call startm.
 	when := nobarrierWakeTime(_p_)
-	pidleput(_p_)
+	pidleput(_p_) // 将p放到全局的pidle队列
 	unlock(&sched.lock)
 
 	if when != 0 {
@@ -5061,6 +5062,7 @@ func releasep() *p {
 	if trace.enabled {
 		traceProcStop(_g_.m.p.ptr())
 	}
+	// p与m解绑
 	_g_.m.p = 0
 	_p_.m = 0
 	_p_.status = _Pidle
