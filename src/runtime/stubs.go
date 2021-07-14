@@ -245,7 +245,8 @@ func publicationBarrier()
 // that might relocate the stack in order to grow or shrink it.
 // A general rule is that the result of getcallersp should be used
 // immediately and can only be passed to nosplit functions.
-
+// getcallerpc 返回的是调用函数之后的那条程序指令的地址，
+// 即 callee 函数返回时要执行的下一条指令的地址。
 //go:noescape
 func getcallerpc() uintptr
 

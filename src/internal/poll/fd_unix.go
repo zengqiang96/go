@@ -19,10 +19,10 @@ type FD struct {
 	fdmu fdMutex
 
 	// System file descriptor. Immutable until Close.
-	Sysfd int
+	Sysfd int // Sysfd是sysSocket返回的socket系统文件描述符
 
 	// I/O poller.
-	pd pollDesc
+	pd pollDesc // pollDesc用于监控文件描述符的可读或者可写
 
 	// Writev cache.
 	iovecs *[]syscall.Iovec

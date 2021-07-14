@@ -266,6 +266,7 @@ func os_beforeExit() {
 	}
 }
 
+// 运行时会在应用程序启动时在后台开启一个用于强制触发垃圾收集的 Goroutine
 // start forcegc helper goroutine
 func init() {
 	go forcegchelper()
@@ -280,6 +281,7 @@ func forcegchelper() {
 			throw("forcegc: phase error")
 		}
 		atomic.Store(&forcegc.idle, 1)
+		// 为了减少对计算资源的占用，大部分时间都是休眠状态，在满足垃圾回收条件时，会被runtime.sysmon唤醒，见#5313行
 		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceEvGoBlock, 1)
 		// this goroutine is explicitly resumed by sysmon
 		if debug.gctrace > 0 {
@@ -2328,7 +2330,7 @@ func startm(_p_ *p, spinning bool) {
 			return
 		}
 	}
-	nmp := mget()
+	nmp := mget() // 从midle中获取m
 	if nmp == nil {
 		// No M is available, we must drop sched.lock and call newm.
 		// However, we already own a P to assign to the M.
@@ -2383,6 +2385,7 @@ func handoffp(_p_ *p) {
 	// findrunnable would return a G to run on _p_.
 
 	// if it has local work, start it straight away
+	// 如果p的本地队列不为空，使用新的m来运行p
 	if !runqempty(_p_) || sched.runqsize != 0 {
 		startm(_p_, false)
 		return
@@ -2431,7 +2434,7 @@ func handoffp(_p_ *p) {
 	// The scheduler lock cannot be held when calling wakeNetPoller below
 	// because wakeNetPoller may call wakep which may call startm.
 	when := nobarrierWakeTime(_p_)
-	pidleput(_p_)
+	pidleput(_p_) // 将p放到全局的pidle队列
 	unlock(&sched.lock)
 
 	if when != 0 {
@@ -3551,16 +3554,25 @@ func reentersyscall(pc, sp uintptr) {
 
 	// Disable preemption because during this function g is in Gsyscall status,
 	// but can have inconsistent g->sched, do not let GC observe it.
+	// 需要禁止 g 的抢占
 	_g_.m.locks++
 
 	// Entersyscall must not call any function that might split/grow the stack.
 	// (See details in comment above.)
 	// Catch calls that might, by replacing the stack guard with something that
 	// will trip any stack check and leaving a flag to tell newstack to die.
+	// entersyscall 中不能调用任何会导致栈增长/分裂的函数
 	_g_.stackguard0 = stackPreempt
+	// 设置 throwsplit，在 newstack 中，如果发现 throwsplit 是 true
+	// 会直接 crash
+	// 下面的代码是 newstack 里的
+	// if thisg.m.curg.throwsplit {
+	//     throw("runtime: stack split at bad time")
+	// }
 	_g_.throwsplit = true
 
 	// Leave SP around for GC and traceback.
+	// 保存现场，在 syscall 之后会依据这些数据恢复现场
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
@@ -3610,6 +3622,7 @@ func reentersyscall(pc, sp uintptr) {
 //
 // This is exported via linkname to assembly in the syscall package.
 //
+// syscall 库和 cgo 调用的标准入口
 //go:nosplit
 //go:linkname entersyscall
 func entersyscall() {
@@ -3703,6 +3716,11 @@ func entersyscallblock_handoff() {
 //
 // This is exported via linkname to assembly in the syscall package.
 //
+// g 已经退出了 syscall
+// 需要准备让 g 在 cpu 上重新运行
+// 这个函数只会在 syscall 库中被调用，在 runtime 里用的 low-level syscall
+// 不会用到
+// 不能有 write barrier，因为 P 可能已经被偷走了
 //go:nosplit
 //go:nowritebarrierrec
 //go:linkname exitsyscall
@@ -3857,6 +3875,8 @@ func exitsyscallfast_pidle() bool {
 	return false
 }
 
+// 在 exitsyscallfast 中吃瘪了，没办法，慢慢来
+// 把 g 的状态设置成 runnable，先进 runq 等着
 // exitsyscall slow path on g0.
 // Failed to acquire P, enqueue gp as runnable.
 //
@@ -5042,6 +5062,7 @@ func releasep() *p {
 	if trace.enabled {
 		traceProcStop(_g_.m.p.ptr())
 	}
+	// p与m解绑
 	_g_.m.p = 0
 	_p_.m = 0
 	_p_.status = _Pidle
@@ -6214,9 +6235,13 @@ func sync_runtime_canSpin(i int) bool {
 	// GOMAXPROCS>1 and there is at least one other running P and local runq is empty.
 	// As opposed to runtime mutex we don't do passive spinning here,
 	// because there can be work on global runq or on other Ps.
+	// 当前 Goroutine 为了获取该锁进入自旋的次数不能大于四次；
+	// 必须运行在多 CPU 的机器上；
+	// 当前机器上至少存在一个正在运行的处理器 P
 	if i >= active_spin || ncpu <= 1 || gomaxprocs <= int32(sched.npidle+sched.nmspinning)+1 {
 		return false
 	}
+	// 并且处理的运行队列为空；
 	if p := getg().m.p.ptr(); !runqempty(p) {
 		return false
 	}
