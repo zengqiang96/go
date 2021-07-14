@@ -515,7 +515,6 @@ loop:
 		releasem(mp)
 		wakeNetPoller(when)
 	} else {
-		// TODO 为什么会处理到其他P的timer？
 		// The timer is in some other P's heap, so we can't change
 		// the when field. If we did, the other P's heap would
 		// be out of order. So we put the new when value in the
