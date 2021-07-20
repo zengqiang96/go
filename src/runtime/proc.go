@@ -5238,7 +5238,7 @@ func sysmon() {
 			lock(&sched.lock)
 			if atomic.Load(&sched.gcwaiting) != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs) {
 				syscallWake := false
-				next, _ := timeSleepUntil()
+				next, _ := timeSleepUntil() // 获取所有P中最先触发的timer.when
 				if next > now {
 					atomic.Store(&sched.sysmonwait, 1)
 					unlock(&sched.lock)

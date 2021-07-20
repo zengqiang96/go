@@ -110,21 +110,19 @@ func (m *Mutex) lockSlow() {
 			continue
 		}
 		new := old
+		// 走到这里有两种情况：1. 自旋超过了次数；2. 目前锁没有被持有。
 		// Don't try to acquire starving mutex, new arriving goroutines must queue.
-		if old&mutexStarving == 0 {
-			// 如果当前不是饥饿模式，那么将mutexLocked状态位设置1，表示加锁
+		if old&mutexStarving == 0 { // 如果Mutex的state不是处于mutexStarving，也就是没有goroutine等待该Mutex的时间超过1ms，当前goroutine就可以尝试去抢锁
 			new |= mutexLocked
 		}
-		if old&(mutexLocked|mutexStarving) != 0 {
-			// 如果当前被锁定或者处于饥饿模式，则waiter加一，表示等待一个等待计数
+		if old&(mutexLocked|mutexStarving) != 0 { // 如果Mutex被其他goroutine抢占着或者处于mutexStarving，也就是存在goroutine等待该Mutex的时间超过1ms，那么mutexWaiter+1
 			new += 1 << mutexWaiterShift
 		}
 		// The current goroutine switches mutex to starvation mode.
 		// But if the mutex is currently unlocked, don't do the switch.
 		// Unlock expects that starving mutex has waiters, which will not
 		// be true in this case.
-		// 如果是饥饿状态，并且已经上锁了，那么mutexStarving状态位设置为1，设置为饥饿状态
-		if starving && old&mutexLocked != 0 {
+		if starving && old&mutexLocked != 0 { // 如果当前 goroutine 的 starving 标识为true(在后面会看到什么时候会将starving设置成 true)，并且Mutex还是被其他goroutine抢占着，设置成mutexStarving
 			new |= mutexStarving
 		}
 		// awoke为true则表明当前线程在上面自旋的时候，修改mutexWoken状态成功
@@ -134,11 +132,9 @@ func (m *Mutex) lockSlow() {
 			if new&mutexWoken == 0 {
 				throw("sync: inconsistent mutex state")
 			}
-			// 清除唤醒标志位
-			// 因为后续流程很有可能当前线程会被挂起,就需要等待其他释放锁的goroutine来唤醒，
-			// 如果unlock的时候发现mutexWoken的位置不是0，则就不会去唤醒，则该线程就无法再醒来加锁。
-			new &^= mutexWoken
+			new &^= mutexWoken // 清除唤醒标志位
 		}
+
 		if atomic.CompareAndSwapInt32(&m.state, old, new) {
 			// 1.如果原来状态没有上锁，也没有饥饿，那么直接返回，表示获取到锁
 			if old&(mutexLocked|mutexStarving) == 0 {
