@@ -102,7 +102,7 @@ func newEntry(i interface{}) *entry {
 func (m *Map) Load(key interface{}) (value interface{}, ok bool) {
 	read, _ := m.read.Load().(readOnly)
 	e, ok := read.m[key]
-	if !ok && read.amended {
+	if !ok && read.amended { // readOnly中没有，dirty中可能有
 		m.mu.Lock()
 		// Avoid reporting a spurious miss if m.dirty got promoted while we were
 		// blocked on m.mu. (If further loads of the same key will not miss, it's
@@ -110,7 +110,7 @@ func (m *Map) Load(key interface{}) (value interface{}, ok bool) {
 		read, _ = m.read.Load().(readOnly)
 		e, ok = read.m[key]
 		if !ok && read.amended {
-			e, ok = m.dirty[key]
+			e, ok = m.dirty[key] // 从dirty中读取
 			// Regardless of whether the entry was present, record a miss: this key
 			// will take the slow path until the dirty map is promoted to the read
 			// map.
@@ -118,9 +118,10 @@ func (m *Map) Load(key interface{}) (value interface{}, ok bool) {
 		}
 		m.mu.Unlock()
 	}
-	if !ok {
+	if !ok { // 如果dirty和readOnly一致，但是不存在key，说明没有这个key
 		return nil, false
 	}
+	// 直接从readOnly中读取
 	return e.load()
 }
 
@@ -135,28 +136,32 @@ func (e *entry) load() (value interface{}, ok bool) {
 // Store sets the value for a key.
 func (m *Map) Store(key, value interface{}) {
 	read, _ := m.read.Load().(readOnly)
+	// 这里需要注意的是，因为entry是指针，entry中的p也是指针，所以对readOnly的entry进行修改，dirty的entry也修改了
+	// TODO  为什么 tryStore只会对没有标记为expunged进行store
 	if e, ok := read.m[key]; ok && e.tryStore(&value) {
 		return
 	}
 
 	m.mu.Lock()
 	read, _ = m.read.Load().(readOnly)
-	if e, ok := read.m[key]; ok {
-		if e.unexpungeLocked() {
+	if e, ok := read.m[key]; ok { // readOnly中存在key
+		if e.unexpungeLocked() { //
 			// The entry was previously expunged, which implies that there is a
 			// non-nil dirty map and this entry is not in it.
-			m.dirty[key] = e
+			m.dirty[key] = e // 要理解上面这个注释需要看懂dirtyLocked()方法
 		}
 		e.storeLocked(&value)
-	} else if e, ok := m.dirty[key]; ok {
+	} else if e, ok := m.dirty[key]; ok { // dirty中存在key
+		// TODO 这里中dirty中存在readOnly没有的key，为什么没有把amended置为true呢
 		e.storeLocked(&value)
-	} else {
-		if !read.amended {
+	} else { // readOnly和dirty中都不存在的key
+		if !read.amended { // readOnly和dirty一致
 			// We're adding the first new key to the dirty map.
 			// Make sure it is allocated and mark the read-only map as incomplete.
 			m.dirtyLocked()
-			m.read.Store(readOnly{m: read.m, amended: true})
+			m.read.Store(readOnly{m: read.m, amended: true}) // amended置为true，因为要想dirty中添加新的元素
 		}
+		// 新key直接添加到dirty
 		m.dirty[key] = newEntry(value)
 	}
 	m.mu.Unlock()
@@ -268,11 +273,11 @@ func (e *entry) tryLoadOrStore(i interface{}) (actual interface{}, loaded, ok bo
 func (m *Map) LoadAndDelete(key interface{}) (value interface{}, loaded bool) {
 	read, _ := m.read.Load().(readOnly)
 	e, ok := read.m[key]
-	if !ok && read.amended {
+	if !ok && read.amended { // 如果readOnly中不存在并且dirty中存在readOnly中没有的key
 		m.mu.Lock()
-		read, _ = m.read.Load().(readOnly)
+		read, _ = m.read.Load().(readOnly) // 再次获取readOnly，前面获取了锁，不会在对readOnly有修改
 		e, ok = read.m[key]
-		if !ok && read.amended {
+		if !ok && read.amended { // 如果readOnly中不存在并且dirty中存在readOnly中没有的key，直接从dirty中删除
 			e, ok = m.dirty[key]
 			delete(m.dirty, key)
 			// Regardless of whether the entry was present, record a miss: this key
@@ -282,7 +287,7 @@ func (m *Map) LoadAndDelete(key interface{}) (value interface{}, loaded bool) {
 		}
 		m.mu.Unlock()
 	}
-	if ok {
+	if ok { // 当readOnly这个map中存在这个key就直接调用entry#delete()方法
 		return e.delete()
 	}
 	return nil, false
@@ -296,10 +301,10 @@ func (m *Map) Delete(key interface{}) {
 func (e *entry) delete() (value interface{}, ok bool) {
 	for {
 		p := atomic.LoadPointer(&e.p)
-		if p == nil || p == expunged {
+		if p == nil || p == expunged { // 如果之前的值为nil或expunged(被标记为删除)
 			return nil, false
 		}
-		if atomic.CompareAndSwapPointer(&e.p, p, nil) {
+		if atomic.CompareAndSwapPointer(&e.p, p, nil) { // 如果p是正常值，将p置为nil
 			return *(*interface{})(p), true
 		}
 	}
@@ -358,16 +363,20 @@ func (m *Map) missLocked() {
 	m.misses = 0
 }
 
+// 进入这个方法会有如下场景
+// 1. 初始化时dirty为nil，第一次Store的时候会在这个方法中完成对dirty的初始化
+// 2. dirty中有key被删除(nil)，而readOnly中没有被标记(expunged)或删除(nil)
 func (m *Map) dirtyLocked() {
 	if m.dirty != nil {
 		return
 	}
 
+	// 遍历readOnly，将p为nil的设置成expunged
 	read, _ := m.read.Load().(readOnly)
 	m.dirty = make(map[interface{}]*entry, len(read.m))
 	for k, e := range read.m {
 		if !e.tryExpungeLocked() {
-			m.dirty[k] = e
+			m.dirty[k] = e // TODO 不理解为什么
 		}
 	}
 }
